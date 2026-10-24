@@ -1,0 +1,102 @@
+# recipang — frontend + agent-app + mcp-server + qdrant (day5_practice_streamlit 구성)
+#
+#   docker compose up --build
+#
+# 로 네 컨테이너를 모두 띄운 뒤 브라우저에서 http://localhost:8501 에 접속한다.
+#
+#   브라우저 ──8501──▶ frontend (Streamlit, app.py)
+#                         │ http://agent-app:8000   (AGENT_API_URL)
+#                         ▼
+#   (curl·/docs) ─8000─▶ agent-app (FastAPI, api.py) ──▶ mcp-server:8001/mcp  ─┐
+#                                │                └──▶ qdrant:6333              │
+#                                └──── recipang_data 볼륨 (/data/recipang.db) ◀─┘  장바구니·나의 냉장고
+#
+# - agent-app 과 mcp-server 는 같은 볼륨의 recipang.db 를 쓴다: 에이전트의 담기·빼기·옮기기는 MCP 도구로,
+#   화면의 직접 누르는 버튼(장보기 담기·[빼기]·[+ 재료])은 agent-app API 로 바뀐다.
+# - healthcheck + depends_on.condition: service_healthy → 앞 서비스가 "요청을 받을 준비"가 된 뒤에 다음 서비스를 띄운다.
+#   (slim 이미지에는 curl 이 없으므로 Python 표준 라이브러리나 bash 내장 기능으로 확인한다)
+# - ANTHROPIC_API_KEY 는 같은 폴더의 .env 에서 읽어 agent-app 에만 넘긴다 (이미지에는 넣지 않는다).
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.0   # qdrant-client 1.20.0 과 버전을 맞춘다
+    ports:
+      - "6333:6333"                # http://localhost:6333/dashboard 에서 색인을 볼 수 있다
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      # bash 의 /dev/tcp 기능으로 6333 포트에 TCP 연결이 되는지만 확인한다
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/mcp-server.Dockerfile
+    expose:
+      - "8001"                     # compose 내부 네트워크에서만 (agent-app 이 접속)
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_SERVER_HOST=0.0.0.0
+      - MCP_SERVER_PORT=8001
+      - RECIPANG_DB_PATH=/data/recipang.db
+    volumes:
+      - recipang_data:/data
+    healthcheck:
+      # MCP 엔드포인트는 일반 GET 에 200 을 주지 않으므로 TCP 연결로 판단한다
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8001), timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent-app:
+    build:
+      context: .
+      dockerfile: docker/agent-app.Dockerfile
+    ports:
+      - "8000:8000"                # API 문서: http://localhost:8000/docs
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MCP_SERVER_URL=http://mcp-server:8001/mcp
+      - RECIPANG_DB_PATH=/data/recipang.db
+    volumes:
+      - recipang_data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      mcp-server:
+        condition: service_healthy
+    restart: on-failure
+    healthcheck:
+      # /health 가 200 을 주면 healthy — lifespan 의 start()(색인 확인·MCP 연결)까지 끝났다는 뜻
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s           # 첫 기동 때 레시피 200개를 임베딩해 색인을 만드는 시간을 준다
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "8501:8501"                # 브라우저 접속 주소: http://localhost:8501
+    environment:
+      - AGENT_API_URL=http://agent-app:8000   # 컨테이너 안에서 agent-app 을 부를 주소 (서비스 이름)
+    depends_on:
+      agent-app:
+        condition: service_healthy
+    healthcheck:
+      # Streamlit 내장 헬스체크 엔드포인트
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  recipang_data:     # 장바구니·나의 냉장고 — 컨테이너를 지워도 남는다 (docker compose down -v 로 삭제)
+  qdrant_storage:    # 레시피 벡터 색인

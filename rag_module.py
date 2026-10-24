@@ -1,7 +1,9 @@
 """
-recipang — 레시피 벡터 검색 (Qdrant 로컬)
-===========================================
-레시피 1개를 검색용 문서 1개로 만들어 임베딩하고, Qdrant 로컬 컬렉션에 저장한다.
+recipang — 레시피 벡터 검색 (Qdrant)
+=====================================
+레시피 1개를 검색용 문서 1개로 만들어 임베딩하고, Qdrant 컬렉션에 저장한다.
+Qdrant 는 환경변수 QDRANT_HOST 가 없으면 로컬 파일 모드(local_qdrant/), 있으면 그 서버에 접속한다
+(Docker 에서는 qdrant 컨테이너 — day5 방식).
 재료 비교와 속성 조건(요리 종류·맛·강도 등)은 SQL(recipe_db)이 맡고, 벡터 검색은
 속성으로 표현하기 어려운 자유로운 표현("비 오는 날", "든든한")을 맡는 보조 색인이다.
 
@@ -95,10 +97,15 @@ def recipe_document(recipe: dict) -> str:
 
 
 def get_qdrant_client() -> QdrantClient:
-    """Docker 없이 완전 로컬 모드로 Qdrant를 실행한다.
+    """Qdrant 클라이언트를 만든다.
 
+    - QDRANT_HOST 가 있으면 그 서버에 네트워크로 접속한다 (Docker: QDRANT_HOST=qdrant, 컨테이너 서비스 이름).
+    - 없으면 Docker 없이 완전 로컬 모드(local_qdrant/ 폴더)로 실행한다.
     주의: 로컬 모드는 한 번에 하나의 클라이언트만 폴더를 열 수 있으므로, 사용 후 반드시 close() 한다.
     """
+    host = os.environ.get("QDRANT_HOST")
+    if host:
+        return QdrantClient(host=host, port=int(os.environ.get("QDRANT_PORT", "6333")))
     return QdrantClient(path=LOCAL_QDRANT_PATH)
 
 

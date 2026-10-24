@@ -39,7 +39,38 @@ venv\Scripts\python -m streamlit run app.py
 - 처음 실행하면 터미널에서 이메일을 물어봅니다. 입력하지 않고 Enter를 누르면 됩니다.
 - 종료하려면 터미널에서 `Ctrl + C`를 누릅니다.
 - 대화창에 처음 요청할 때 장바구니·냉장고 도구 서버(MCP)를 띄우느라 10초 정도 더 걸립니다. 그 뒤로는 연결을 유지해서 빨라집니다.
-- `graph.py`, `handlers.py`, `router.py`, `mcp_tool_server.py`를 고쳤다면 앱을 껐다가 다시 실행해야 반영됩니다 (에이전트를 앱 프로세스에 하나만 만들어 재사용하기 때문). 앱을 다시 시작하면 대화 기억도 사라집니다.
+- `graph.py`, `handlers.py`, `backend.py`, `router.py`, `mcp_tool_server.py`를 고쳤다면 앱을 껐다가 다시 실행해야 반영됩니다 (에이전트를 앱 프로세스에 하나만 만들어 재사용하기 때문). 앱을 다시 시작하면 대화 기억도 사라집니다.
+
+### (다른 방법) Docker로 실행
+
+가상환경 없이 컨테이너 4개로 실행합니다. [Docker Desktop](https://www.docker.com/products/docker-desktop/)을 켜고, `.env`에 `ANTHROPIC_API_KEY`를 넣은 뒤:
+
+```powershell
+docker compose up --build
+```
+
+```
+브라우저 ──8501──▶ frontend (Streamlit, app.py)
+                      │ http://agent-app:8000
+                      ▼
+(/docs) ─8000─▶ agent-app (FastAPI, api.py) ──▶ mcp-server:8001/mcp ─┐
+                      │              └──▶ qdrant:6333                 │
+                      └──── recipang_data 볼륨 (recipang.db) ◀────────┘
+```
+
+| 컨테이너 | 하는 일 | 주소 |
+|---|---|---|
+| `frontend` | 화면. 백엔드 코드 없이 agent-app API만 부릅니다 (`api_client.py`). | http://localhost:8501 |
+| `agent-app` | LangGraph 그래프, 레시피 검색, 장바구니·냉장고 API (`api.py` → `backend.py`) | http://localhost:8000/docs (API 문서) |
+| `mcp-server` | 장바구니·나의 냉장고 MCP 도구 서버 (HTTP 방식) | 컨테이너끼리만 |
+| `qdrant` | 레시피 벡터 색인 | http://localhost:6333/dashboard |
+
+- 처음 빌드는 패키지 설치와 임베딩 모델 다운로드 때문에 10분 정도 걸립니다. 처음 기동할 때 agent-app이 레시피 색인을 만드느라 30초쯤 더 걸리고, 준비가 끝나야 frontend가 뜹니다.
+- **장바구니·나의 냉장고**는 `recipang_data` 볼륨, 레시피 색인은 `qdrant_storage` 볼륨에 있어서 컨테이너를 지우고 다시 만들어도 남습니다. 모두 비우려면 `docker compose down -v`를 실행합니다.
+- 종료는 `docker compose down`입니다. 코드나 `data/recipes.json`을 고쳤다면 `docker compose up --build`로 다시 빌드합니다.
+- 대화 기억은 agent-app 프로세스 메모리에 있어서, agent-app을 다시 시작하면 사라집니다.
+- 8000, 8501, 6333 포트를 다른 프로그램이 쓰고 있으면 기동에 실패합니다. 그 프로그램을 끄거나 `docker-compose.yml`의 `ports` 왼쪽 숫자를 바꾸세요.
+- 같은 코드가 로컬과 Docker에서 모두 동작합니다. 환경변수(`AGENT_API_URL`, `MCP_SERVER_URL`, `QDRANT_HOST`)가 있으면 Docker 방식(HTTP 접속), 없으면 로컬 방식(한 프로세스 · stdio MCP · Qdrant 로컬 파일)으로 동작합니다.
 
 ### 3. 사용법
 
@@ -135,6 +166,7 @@ venv\Scripts\python rag_module.py # 벡터 색인을 새로 만들고 의미 검
 venv\Scripts\python memory.py     # 단기 기억 데모 (5턴 창에 6턴을 넣어 가장 오래된 턴이 밀려나는지, 확인 결과 반영, 기억 요약 출력)
 venv\Scripts\python router.py     # 예시 질문 분류 결과 출력 (API 키 필요)
 venv\Scripts\python graph.py      # 그래프 구조(Mermaid) 출력 후 터미널 대화 (API 키 필요, 확인 대기는 y/N)
+venv\Scripts\python -m uvicorn api:app --port 8000   # agent-app API만 로컬로 실행 → http://localhost:8000/docs
 ```
 
 ### LangGraph 그래프 (`graph.py`)
@@ -177,15 +209,20 @@ venv\Scripts\langgraph dev
 | `catalog.py` | 식자재 카탈로그 (대분류 → 식자재). 마켓컬리 식품 카테고리를 참고했습니다. |
 | `storage.py` | 장바구니 / 나의 냉장고 SQLite 저장소 (담기, 빼기, 목록) |
 | `recipe_db.py` | 레시피 DB(`recipes.db`) 생성과 추천 조회 |
-| `app.py` | Streamlit 화면 (장보기, 레시피 추천) |
+| `app.py` | Streamlit 화면 (장보기, 레시피 추천). 장바구니·레시피·에이전트는 백엔드 객체로만 다룸 |
+| `backend.py` | 백엔드 — 화면이 쓰는 기능 8가지(목록·담기·빼기·추천·카드·대화·확인 등)를 같은 프로세스에서 실행 (로컬 실행, agent-app) |
+| `api.py` | agent-app API (FastAPI) — `backend.py`를 HTTP로 엶 (Docker) |
+| `api_client.py` | `backend.py`와 같은 메서드를 HTTP로 부르는 클라이언트 (Docker의 frontend) |
+| `errors.py` | 화면에 보여 줄 백엔드 오류 (`BackendError`, `NoPendingError`) |
 | `data/recipes.json` | 레시피 200개와 속성 (Claude가 생성, 재료는 모두 카탈로그 안의 것) |
-| `rag_module.py` | 레시피 벡터 색인(`local_qdrant/`) 생성, 의미 검색, 레시피 검색(`retrieve`: SQL 거르기 → 벡터 정렬) |
+| `rag_module.py` | 레시피 벡터 색인(로컬 `local_qdrant/` 또는 Docker의 qdrant) 생성, 의미 검색, 레시피 검색(`retrieve`: SQL 거르기 → 벡터 정렬) |
 | `router.py` | 라우터 — 레시피 검색 / 냉장고 / 장바구니 중 무엇이 필요한지 분류하고, 어느 것도 아니면 바로 답할 문장을 만듦 (Claude Haiku 5.5) |
 | `memory.py` | 단기 기억 — 한 턴의 형식(요청·답변·해석한 조건·보여준 레시피·확인 결과), 최근 N턴을 남기는 State reducer, 프롬프트에 넣을 요약 텍스트 |
 | `handlers.py` | 요청 처리 — 냉장고·장바구니 요청 해석과 작업 계획(LLM) → 확인한 작업 실행(MCP 도구), 레시피 요청 해석(LLM) → `rag_module.retrieve` → 설명 문장(LLM) |
-| `graph.py` | LangGraph 그래프 — 노드·조건부 엣지로 흐름을 정하고, 확인 단계(interrupt)와 대화 기억(체크포인터)을 관리. `app.py`가 이것을 씀 |
+| `graph.py` | LangGraph 그래프 — 노드·조건부 엣지로 흐름을 정하고, 확인 단계(interrupt)와 대화 기억(체크포인터)을 관리. `backend.py`가 이것을 씀 |
 | `studio.py`, `langgraph.json` | LangGraph Studio(`langgraph dev`) 진입점 |
-| `mcp_tool_server.py` | MCP 도구 서버 — `storage.py`를 감싼 `list_items` / `add_items` / `remove_items` / `move_items` |
+| `mcp_tool_server.py` | MCP 도구 서버 — `storage.py`를 감싼 `list_items` / `add_items` / `remove_items` / `move_items` (로컬은 stdio, Docker는 HTTP) |
+| `docker-compose.yml`, `docker/`, `.dockerignore` | Docker 실행 설정 — 서비스별 Dockerfile과 requirements (frontend · agent-app · mcp-server) |
 | `설계안.txt` | 기획 메모와 할 일 목록 |
 | `.env.example` | API 키 예시. `.env`로 복사해 사용합니다. |
 

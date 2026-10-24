@@ -336,13 +336,18 @@ class Handlers:
     """
 
     def __init__(self) -> None:
-        # 도구 서버를 지금 실행 중인 Python 으로 띄운다. 환경변수를 그대로 넘겨서
-        # storage.py 의 DB 위치(RECIPANG_DB_PATH)가 이 프로세스와 같아지게 한다.
-        self.mcp_client = Client(
-            PythonStdioTransport(
-                MCP_SERVER_SCRIPT, env=dict(os.environ), cwd=str(MCP_SERVER_SCRIPT.parent), keep_alive=False
+        server_url = os.environ.get("MCP_SERVER_URL")
+        if server_url:
+            # Docker: 따로 떠 있는 mcp-server 컨테이너에 HTTP 로 접속한다 (예: http://mcp-server:8001/mcp)
+            self.mcp_client = Client(server_url)
+        else:
+            # 로컬: 도구 서버를 지금 실행 중인 Python 으로 띄운다 (stdio). 환경변수를 그대로 넘겨서
+            # storage.py 의 DB 위치(RECIPANG_DB_PATH)가 이 프로세스와 같아지게 한다.
+            self.mcp_client = Client(
+                PythonStdioTransport(
+                    MCP_SERVER_SCRIPT, env=dict(os.environ), cwd=str(MCP_SERVER_SCRIPT.parent), keep_alive=False
+                )
             )
-        )
         self._started = False
 
     async def start(self) -> None:

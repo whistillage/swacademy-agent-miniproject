@@ -54,6 +54,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 import recipe_db
+from errors import NoPendingError
 from handlers import Handlers, RecipeAnswer
 from memory import PENDING_WAITING, Turn, context_text, remember
 from router import route_query  # router 를 불러올 때 .env(ANTHROPIC_API_KEY)도 함께 로드된다
@@ -352,14 +353,14 @@ class RecipangAgent:
             chosen: 작업마다 실행할 품목 (화면에서 체크한 것). None 이면 취소.
 
         Raises:
-            RuntimeError: 확인을 기다리는 작업이 없을 때 (이미 처리했거나, 앱을 다시 시작해 기억이 사라진 경우).
+            NoPendingError: 확인을 기다리는 작업이 없을 때 (이미 처리했거나, 앱을 다시 시작해 기억이 사라진 경우).
         """
         snapshot = await self.graph.aget_state(_config(thread_id))
         if snapshot.interrupts:
             return await self._run(Command(resume={"chosen": chosen} if chosen is not None else False), thread_id)
         if "execute" in snapshot.next:  # 지난번 실행이 오류로 멈췄으면 같은 선택으로 다시 실행
             return await self._run(None, thread_id)
-        raise RuntimeError("확인을 기다리는 작업이 없어요.")
+        raise NoPendingError("확인을 기다리는 작업이 없어요.")
 
     async def pending(self, thread_id: str) -> dict | None:
         """이 대화방이 확인 대기로 멈춰 있으면 interrupt payload, 아니면 None (그래프를 실행하지 않는다)."""

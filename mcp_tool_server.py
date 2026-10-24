@@ -2,13 +2,17 @@
 recipang — MCP 도구 서버 (장바구니 / 나의 냉장고)
 ====================================================
 Day4 의 FastMCP 패턴을 그대로 쓴다. storage.py 를 감싸서 장바구니(cart)와 나의 냉장고(fridge)를
-다루는 도구를 노출한다. 이 파일은 handlers.py 에서 MCP Client 로 stdio 접속된다.
+다루는 도구를 노출한다. handlers.py 의 MCP Client 가 접속한다.
 
-동작 방식:
-  handlers.py 의 Client(PythonStdioTransport(...)) 가 이 스크립트를 하위 프로세스로 실행
+실행 방식 (환경변수 MCP_TRANSPORT 로 고른다):
+  stdio (기본, 로컬 실행)
+    handlers.py 의 Client(PythonStdioTransport(...)) 가 이 스크립트를 하위 프로세스로 실행
     → 표준입출력(stdin/stdout)으로 JSON-RPC 메시지를 주고받음
     → client.call_tool("add_items", {"place": "cart", "ingredients": ["오징어"]})
     → 아래 add_items() 가 실행되고 반환 dict 가 클라이언트로 전달됨
+  http (Docker 의 mcp-server 컨테이너, day5 방식)
+    MCP_TRANSPORT=http 이면 http://MCP_SERVER_HOST:MCP_SERVER_PORT/mcp 로 요청을 기다리고,
+    handlers.py 는 MCP_SERVER_URL 로 접속한다. 같은 JSON-RPC 메시지가 HTTP 로 오갈 뿐 도구는 같다.
 
 노출 도구 (place 는 "cart" = 장바구니, "fridge" = 나의 냉장고):
   - list_items(place)                    : 담긴 식자재 목록
@@ -17,6 +21,7 @@ Day4 의 FastMCP 패턴을 그대로 쓴다. storage.py 를 감싸서 장바구�
   - move_items(from_place, ingredients)  : 반대쪽으로 옮기기 (예: 장바구니 → 냉장고)
 """
 
+import os
 import sys
 from typing import Literal
 
@@ -88,7 +93,14 @@ def move_items(from_place: Place, ingredients: list[str]) -> dict:
 
 
 if __name__ == "__main__":
-    # stdout은 MCP JSON-RPC 메시지 전용이므로, 로그는 반드시 stderr로 출력한다.
+    # stdout은 stdio 방식에서 MCP JSON-RPC 메시지 전용이므로, 로그는 반드시 stderr로 출력한다.
     # (stdout 에 print 하면 클라이언트가 이를 프로토콜 메시지로 해석하려다 연결이 깨진다.)
-    print("recipang-tools-server starting (stdio)...", file=sys.stderr)
-    mcp.run(show_banner=False)  # 기본 transport = stdio. 클라이언트 연결이 끊길 때까지 블로킹 (시작 배너는 끔)
+    if os.environ.get("MCP_TRANSPORT", "stdio") == "http":
+        # 컨테이너에서는 다른 컨테이너가 접속할 수 있도록 0.0.0.0 에 바인딩해야 한다
+        host = os.environ.get("MCP_SERVER_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_SERVER_PORT", "8001"))
+        print(f"recipang-tools-server starting (http://{host}:{port}/mcp)...", file=sys.stderr)
+        mcp.run(transport="http", host=host, port=port, show_banner=False)
+    else:
+        print("recipang-tools-server starting (stdio)...", file=sys.stderr)
+        mcp.run(show_banner=False)  # transport = stdio. 클라이언트 연결이 끊길 때까지 블로킹 (시작 배너는 끔)
