@@ -1,0 +1,7 @@
+fastmcp>=2.0
+anthropic>=2.1
+qdrant-client>=1.11
+fastembed>=0.9
+python-dotenv>=1.0
+streamlit>=1.30
+langgraph>=1.0

@@ -1,0 +1,19 @@
+# API 키 — 절대 올리지 않는다 (.env.example 을 복사해 쓴다)
+.env
+
+# 가상환경 · 파이썬 캐시
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# 장바구니 / 나의 냉장고 (실행하면 만들어짐)
+recipang.db
+
+# data/recipes.json 에서 자동으로 만들어지는 레시피 DB와 벡터 색인
+recipes.db
+recipes.db.tmp
+local_qdrant/
+
+# langgraph dev (Studio) 실행 데이터
+.langgraph_api/
