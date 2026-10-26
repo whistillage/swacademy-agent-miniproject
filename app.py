@@ -58,6 +58,7 @@ import uuid
 
 import streamlit as st
 
+import fridge_view
 from errors import BackendError, NoPendingError
 
 AGENT_API_URL = os.environ.get("AGENT_API_URL")  # Docker 의 frontend 컨테이너에서만 설정된다
@@ -65,10 +66,26 @@ AGENT_API_URL = os.environ.get("AGENT_API_URL")  # Docker 의 frontend 컨테이
 COLUMNS_PER_ROW = 3      # 장보기 탭 안에서 체크박스를 한 줄에 몇 개씩 놓을지
 RECIPE_PAGE_SIZE = 3     # 추천 답변에 처음에 / [더보기] 한 번에 몇 개씩 보여줄지
 ADD_BUTTONS_PER_ROW = 3  # 레시피 카드에서 [+ 재료] 버튼을 한 줄에 몇 개씩 놓을지
-CHAT_HEIGHT = 600        # 레시피 추천 대화 기록 영역의 높이(px). 넘치면 이 안에서 스크롤된다
+CHAT_HEIGHT = 460        # 레시피 추천 대화 기록 영역의 높이(px). 예시 줄·입력창까지 한 화면에 들어오도록 잡는다
 SEASONING_CATEGORY = "양념·오일"  # 나의 냉장고에서 '양념'으로 묶어 보여줄 카탈로그 대분류
 CART, FRIDGE = "cart", "fridge"
 PLACE_NAMES = {CART: "장바구니", FRIDGE: "나의 냉장고"}
+
+# 대분류 탭 이모지 (catalog.py 의 이름 기준). 없으면 이모지 없이 이름만.
+CATEGORY_EMOJI = {
+    "채소": "🥬", "과일·견과·쌀": "🍎", "수산·해산·건어물": "🐟", "정육·가공육·달걀": "🥩",
+    "국·반찬·메인요리": "🍲", "면·가루·통조림": "🍜", "양념·오일": "🫙", "베이커리": "🍞", "유제품": "🧀",
+}
+# 요리 종류(dish_type) 이모지 (recipe_db.py 설명의 값 기준)
+DISH_EMOJI = {
+    "밥": "🍚", "죽": "🥣", "국·탕": "🍲", "찌개": "🍲", "볶음": "🍳", "조림": "🥘", "찜": "♨️", "구이": "🔥",
+    "무침·나물": "🥗", "전·튀김": "🥞", "면·분식": "🍜", "샐러드": "🥗", "빵·간식": "🥐", "반찬": "🥢",
+}
+
+
+def _with_emoji(ingredient: str) -> str:
+    """알약에 보여줄 라벨: 이모지 + 식자재 이름. 값(value)은 이름 그대로라 저장 로직은 안 바뀜다."""
+    return f"{fridge_view.EMOJI.get(ingredient, fridge_view.DEFAULT_EMOJI)} {ingredient}"
 
 
 @st.cache_resource(show_spinner="준비하는 중이에요...")
@@ -97,19 +114,42 @@ def _category_of(ingredient: str) -> str | None:
     return next((c for c, items in _catalog().items() if ingredient in items), None)
 
 
-def _checkbox_key(ingredient: str) -> str:
-    """식자재 체크박스의 session_state 키."""
-    return f"pick_{ingredient}"
+def _shop_key(category: str) -> str:
+    """장보기 대분류 한 개의 알약(pills) 위젯 session_state 키."""
+    return f"shop_{category}"
+
+
+def _shop_selected() -> dict[str, list[str]]:
+    """대분류별 선택 저장소 {대분류: [식자재, ...]}.
+
+    위젯 키(shop_<대분류>)에 기대면 안 된다 — Streamlit 은 화면에 그려지지 않은 위젯의 상태를 지우므로,
+    다른 대분류로 넘어가면 직전 대분류의 선택이 사라진다. 그래서 알약이 바뀜 때마다 여기에 복사해 둔다.
+    """
+    return st.session_state.setdefault("shop_selected", {})
+
+
+def _on_pick(category: str) -> None:
+    """식자재 알약 콜백: 위젯 값을 저장소에 복사한다."""
+    _shop_selected()[category] = list(st.session_state.get(_shop_key(category)) or [])
 
 
 def _selected_ingredients() -> list[str]:
-    """모든 탭에서 체크된 식자재를 카탈로그 순서대로 모은다."""
+    """모든 대분류에서 고른 식자재를 카탈로그 순서대로 모은다."""
+    picked = _shop_selected()
     return [
         ingredient
-        for ingredients in _catalog().values()
+        for category, ingredients in _catalog().items()
         for ingredient in ingredients
-        if st.session_state.get(_checkbox_key(ingredient))
+        if ingredient in picked.get(category, [])
     ]
+
+
+def _on_clear_picks() -> None:
+    """[선택 초기화] 콜백: 모든 대분류의 선택을 비운다 (저장소 + 그려져 있는 알약 위젯)."""
+    st.session_state["shop_selected"] = {}
+    for category in _catalog():
+        if _shop_key(category) in st.session_state:
+            st.session_state[_shop_key(category)] = []
 
 
 def _on_add(place: str) -> None:
@@ -137,68 +177,102 @@ def _on_add(place: str) -> None:
     if result["in_other"]:
         messages.append(("warning", f"{other_name}에 있어서 담지 않았습니다: {', '.join(result['in_other'])}"))
     st.session_state["messages"] = messages
-
-    for ingredient in selected:
-        st.session_state[_checkbox_key(ingredient)] = False
+    _on_clear_picks()
 
 
-def _on_remove(place: str, ingredient: str) -> None:
-    """사이드바 [빼기] 버튼 콜백."""
-    try:
-        _backend().remove_item(place, ingredient)
-    except BackendError as e:
-        st.session_state["messages"] = [("error", str(e))]
+def _pills_key(place: str, label: str) -> str:
+    """사이드바 품목 알약(pills) 위젯의 session_state 키."""
+    return f"pills_{place}_{label}"
 
 
-def _render_items(place: str, items: list[str]) -> None:
-    """품목마다 이름과 [빼기] 버튼을 한 줄로 그린다."""
-    for ingredient in items:
-        name_col, button_col = st.columns([3, 1])
-        name_col.write(ingredient)
-        button_col.button("빼기", key=f"remove_{place}_{ingredient}", on_click=_on_remove, args=(place, ingredient))
+def _on_remove_selected(place: str, labels: list[str]) -> None:
+    """사이드바 [선택한 것 빼기] 콜백: 알약에서 고른 품목을 빼고 선택을 비운다."""
+    for label in labels:
+        key = _pills_key(place, label)
+        for ingredient in st.session_state.get(key) or []:
+            try:
+                _backend().remove_item(place, ingredient)
+            except BackendError as e:
+                st.session_state["messages"] = [("error", str(e))]
+                return
+        st.session_state[key] = []
 
 
 def _render_place(place: str, items: list[str]) -> None:
-    """사이드바에 장바구니 또는 냉장고 목록을 [빼기] 버튼과 함께 그린다.
+    """사이드바에 장바구니 또는 냉장고를 알약(pills)으로 그린다. 눌러 고른 뒤 [선택한 것 빼기] 한 번으로 뻜다.
 
     나의 냉장고는 식자재와 양념(SEASONING_CATEGORY 대분류)을 나눠서 보여준다.
     """
-    st.subheader(f"{PLACE_NAMES[place]} ({len(items)})")
+    st.subheader(f"{PLACE_NAMES[place]} · {len(items)}")
     if not items:
         st.caption("비어 있음")
         return
-    if place != FRIDGE:
-        _render_items(place, items)
-        return
 
-    seasonings = [i for i in items if _category_of(i) == SEASONING_CATEGORY]
-    foods = [i for i in items if i not in seasonings]
-    for label, group in (("식자재", foods), ("양념", seasonings)):
-        if group:
-            st.markdown(f"**{label}** ({len(group)})")
-            _render_items(place, group)
+    if place == FRIDGE:
+        seasonings = [i for i in items if _category_of(i) == SEASONING_CATEGORY]
+        groups = [("식자재", [i for i in items if i not in seasonings]), ("양념", seasonings)]
+    else:
+        groups = [("전체", items)]
+
+    chosen_any = False
+    labels = []
+    for label, group in groups:
+        if not group:
+            continue
+        labels.append(label)
+        if place == FRIDGE:
+            st.caption(f"{label} · {len(group)}")
+        chosen = st.pills(label, group, selection_mode="multi", key=_pills_key(place, label),
+                          format_func=_with_emoji, label_visibility="collapsed")
+        chosen_any = chosen_any or bool(chosen)
+    st.button("선택한 것 빼기", key=f"remove_{place}", disabled=not chosen_any,
+              on_click=_on_remove_selected, args=(place, labels), use_container_width=True)
 
 
 def _render_shop() -> None:
-    """장보기 칸: 담기 결과 메시지, 대분류 탭과 체크박스, 담기 버튼."""
+    """장보기 칸: 담기 결과 메시지, 대분류 탭(선택 개수 표시)과 알약, 선택 트레이, 담기 버튼."""
     # 직전 담기 결과 메시지 (한 번 보여주고 지운다)
     for level, text in st.session_state.pop("messages", []):
         getattr(st, level)(text)
 
     catalog = _catalog()
-    for tab, (category, ingredients) in zip(st.tabs(list(catalog)), catalog.items()):
-        with tab:
-            cols = st.columns(COLUMNS_PER_ROW)
-            for i, ingredient in enumerate(ingredients):
-                cols[i % COLUMNS_PER_ROW].checkbox(ingredient, key=_checkbox_key(ingredient))
+    categories = list(catalog)
 
-    # 다른 탭에서 고른 품목은 화면에 안 보이므로 선택 목록을 따로 보여준다
+    # 대분류는 탭 대신 알약(단일 선택). 탭은 라벨이 바뀜 때마다(고른 개수 표시) 처음 탭으로 돌아가서
+    # 알약에 key 를 주고 고른 개수는 format_func 로만 붙인다 → 위젯은 그대로, 선택도 그대로.
+    def _category_label(category: str) -> str:
+        n = len(_shop_selected().get(category, []))
+        emoji = CATEGORY_EMOJI.get(category, "")
+        return f"{emoji} {category} ({n})" if n else f"{emoji} {category}"
+
+    if "shop_category" not in st.session_state:
+        st.session_state["shop_category"] = categories[0]
+    # 대분류는 세그먼트(띄 모양), 식자재는 알약 — 둘의 생김새를 다르게 해서 "분류 고르기 / 재료 고르기"가 한눈에 구분되게 한다
+    category = st.segmented_control("대분류", categories, key="shop_category", format_func=_category_label,
+                                    label_visibility="collapsed") or categories[0]
+    # 이 대분류의 알약이 처음 그려지면(위젯 상태 없음) 저장소에서 선택을 복원한다
+    if _shop_key(category) not in st.session_state:
+        st.session_state[_shop_key(category)] = list(_shop_selected().get(category, []))
+    with st.container(border=True):
+        n_here = len(_shop_selected().get(category, []))
+        st.markdown(f"**{CATEGORY_EMOJI.get(category, '')} {category}** · {len(catalog[category])}가지"
+                    + (f" · 고름 {n_here}" if n_here else ""))
+        st.pills(category, catalog[category], selection_mode="multi", key=_shop_key(category),
+                 format_func=_with_emoji, label_visibility="collapsed", on_change=_on_pick, args=(category,))
+
+    # 선택 트레이: 대분류를 넘나들며 고른 걸 한 줄에 모아 보여주고, 오른쪽에 초기화 버튼
     selected = _selected_ingredients()
-    st.caption(f"선택: {', '.join(selected)}" if selected else "선택한 식자재가 없습니다.")
+    tray_col, clear_col = st.columns([3, 1], vertical_alignment="center")
+    if selected:
+        tray_col.markdown("선택 · " + "  ".join(_with_emoji(s) for s in selected))
+    else:
+        tray_col.caption("대분류에서 식자재를 골라 주세요.")
+    clear_col.button("✕ 비우기", on_click=_on_clear_picks, disabled=not selected, use_container_width=True,
+                     help="고른 식자재를 모두 취소")
 
     cart_col, fridge_col = st.columns(2)
-    cart_col.button("장바구니에 담기", on_click=_on_add, args=(CART,), type="primary")
-    fridge_col.button("냉장고에 담기", on_click=_on_add, args=(FRIDGE,))
+    cart_col.button("장바구니에 담기", on_click=_on_add, args=(CART,), type="primary", use_container_width=True)
+    fridge_col.button("냉장고에 담기", on_click=_on_add, args=(FRIDGE,), use_container_width=True)
 
 
 def _on_add_to_cart(ingredient: str) -> None:
@@ -219,7 +293,7 @@ def _render_add_buttons(label: str, items: list[str], key_prefix: str, current: 
         current:    지금 장바구니/냉장고에 있는 재료 → 담을 곳(CART/FRIDGE).
                     여기 있는 재료는 '✓ 재료'로, 없으면 [+ 재료](장바구니에 담기)로 그린다.
     """
-    st.write(label)
+    st.caption(label)
     cols = st.columns(ADD_BUTTONS_PER_ROW)
     for i, name in enumerate(items):
         col = cols[i % ADD_BUTTONS_PER_ROW]
@@ -229,21 +303,27 @@ def _render_add_buttons(label: str, items: list[str], key_prefix: str, current: 
         elif _category_of(name) is None:
             col.button(name, key=key, disabled=True, help="카탈로그에 없는 재료라 담을 수 없음")
         else:
-            col.button(f"+ {name}", key=key, on_click=_on_add_to_cart, args=(name,), help="장바구니에 담기")
+            col.button(_with_emoji(name), key=key, on_click=_on_add_to_cart, args=(name,), help="장바구니에 담기")
 
 
 def _render_recipe(rank: int, rec: dict, key_prefix: str, current: dict[str, str]) -> None:
-    """추천 레시피 카드 하나를 그린다: 제목 → 재료 → 만드는 법 → 더 필요한 재료.
+    """추천 레시피 카드 하나: 제목 + 상태 배지 → 재료 한 줄 → 더 필요한 재료 버튼 → (접힘) 만드는 법.
 
     rec 는 recipe_db.Recommendation 의 dict. key_prefix / current 는 _render_add_buttons 참고.
+    비교할 때 필요한 건 "뭐 만들 수 있고 뭐가 모자라나"라 조리 순서는 기본으로 접는다.
     """
     with st.container(border=True):
-        need = f"{len(rec['missing'])}개 더 필요" if rec["missing"] else "바로 만들 수 있음"
-        st.markdown(f"**{rank}. {rec['name']}** · {rec['dish_type']} · {need}")
-        st.markdown("**재료**\n\n" + "\n".join(f"- {i['name']} {i['amount']} ({i['type']})" for i in rec["ingredients"]))
-        st.markdown("**만드는 법**\n\n" + "\n".join(f"{n}. {step}" for n, step in enumerate(rec["steps"], start=1)))
+        head, badge = st.columns([3, 1.2])
+        head.markdown(f"**{rank}. {DISH_EMOJI.get(rec['dish_type'], '🍽️')} {rec['name']}** · {rec['dish_type']}")
+        if rec["missing"]:
+            badge.badge(f"{len(rec['missing'])}개 더 필요", color="orange")
+        else:
+            badge.badge("바로 만들 수 있음", color="green")
+        st.caption("재료 · " + ", ".join(f"{i['name']} {i['amount']}".strip() for i in rec["ingredients"]))
         if rec["missing"]:
             _render_add_buttons("더 필요한 재료", rec["missing"], key_prefix, current)
+        with st.expander("만드는 법"):
+            st.markdown("\n".join(f"{n}. {step}" for n, step in enumerate(rec["steps"], start=1)))
 
 
 def _on_recommend() -> None:
@@ -406,18 +486,42 @@ def _render_recipe_answer(message_no: int, owned: list[str], limit: int, current
         st.button("더보기", key=f"more_{message_no}", on_click=_on_more, args=(message_no,))
 
 
+# 예시 알약: 짧은 라벨 → 실제로 보낼 문장. 라벨이 짧아야 한 줄에 들어간다.
+EXAMPLE_PROMPTS = {
+    "🌶️ 매운 요리": "냉장고 재료로 만들 수 있는 매운 요리",
+    "🍲 얼큰한 국물": "비 오는 날 먹을 얼큰한 국물 요리",
+    "🫙 양념 냉장고로": "양념류는 다 냉장고에 넣어줘",
+    "🛒 장바구니": "장바구니 보여줘",
+}
+
+
+def _on_example() -> None:
+    """예시 알약을 누르면 그 라벨에 해당하는 문장을 요청으로 보내고 선택을 비운다."""
+    label = st.session_state.get("example_pick")
+    if label:
+        _answer_prompt(EXAMPLE_PROMPTS[label])
+    st.session_state["example_pick"] = None
+
+
 def _render_chat(items: dict[str, list[str]]) -> None:
-    """레시피 추천 칸: 대화 기록(높이 고정, 스크롤) → [내 재료로 추천] 빠른 검색 버튼 → 입력창."""
+    """레시피 추천 칸: 대화 기록(높이 고정, 스크롤) → 예시 알약 + [내 재료로 바로 추천] 한 줄 → 입력창."""
     chat = st.session_state.get("chat", [])
     current = {name: place for place, names in items.items() for name in names}
 
     with st.container(height=CHAT_HEIGHT):
         if not chat:
-            st.caption(
-                "레시피 추천이나 장바구니·냉장고 정리를 자유롭게 말해 보세요. "
-                "예: '냉장고 재료로 만들 수 있는 매운 요리', '양념류는 다 냉장고에 넣어줘', "
-                "'오징어볶음 재료 장바구니에 담아줘', '장바구니에 있는 거 다 냉장고로 옮겨줘'. "
-                "아래 [내 재료로 추천]을 누르면 장바구니와 냉장고 재료로 바로 추천해 드려요."
+            # 빈 상태: 글 대신 그림 한 장
+            st.markdown(
+                """
+                <div style="text-align:center;padding:48px 12px 24px">
+                  <div style="font-size:56px;letter-spacing:6px;line-height:1">🥔🥩🧀</div>
+                  <div style="font-size:44px;line-height:1.2;margin:4px 0 10px">⬇️</div>
+                  <div style="font-size:56px;letter-spacing:6px;line-height:1">🍲</div>
+                  <p style="margin:18px 0 4px;font-size:18px;font-weight:600">냉장고에 있는 걸로, 오늘 뭐 해 먹지</p>
+                  <p style="margin:0;color:#8A7A6E;font-size:14px">아래 예시를 누르거나 직접 적어 주세요.<br>장바구니·냉장고 정리도 말로 됩니다.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
         for message_no, message in enumerate(chat):
             with st.chat_message(message["role"]):
@@ -435,20 +539,55 @@ def _render_chat(items: dict[str, list[str]]) -> None:
                 if message.get("text"):
                     st.write(message["text"])
 
-    st.button(
-        "내 재료로 추천",
-        on_click=_on_recommend,
-        type="primary",
-        help="장바구니와 냉장고 재료로, 더 필요한 재료가 적은 레시피부터 바로 추천해요 (AI를 거치지 않아요)",
-    )
-    if prompt := st.chat_input("원하는 레시피를 물어보세요 (예: 냉장고 재료로 만들 수 있는 매운 요리)"):
-        _answer_prompt(prompt)
-        st.rerun()
+    # 예시 알약·빠른 추천·입력창을 대화 기록 바로 아래 한 덩어리로 둔다.
+    # (chat_input 은 컨테이너 안에 넣어야 페이지 맨 아래 고정이 풀리고 제자리에 그려진다)
+    with st.container():
+        pills_col, quick_col = st.columns([3, 1], vertical_alignment="center")
+        pills_col.pills("예시", list(EXAMPLE_PROMPTS), key="example_pick", on_change=_on_example,
+                        label_visibility="collapsed", help="누르면 그 요청을 바로 보내요")
+        quick_col.button(
+            "🍳 바로 추천",
+            on_click=_on_recommend,
+            type="primary",
+            use_container_width=True,
+            help="장바구니와 냉장고 재료로, 더 필요한 재료가 적은 레시피부터 바로 추천해요 (AI를 거치지 않아요)",
+        )
+        if prompt := st.chat_input("원하는 레시피를 물어보세요 (예: 냉장고 재료로 만들 수 있는 매운 요리)"):
+            _answer_prompt(prompt)
+            st.rerun()
+
+
+def _fridge_by_category(fridge_items: list[str]) -> dict[str, list[str]]:
+    """냉장고 품목을 카탈로그 대분류 순서로 묶는다 (냉장고 모형의 칸)."""
+    by = {c: [i for i in names if i in fridge_items] for c, names in _catalog().items()}
+    return {c: names for c, names in by.items() if names}
+
+
+def _render_landing(items: dict[str, list[str]]) -> None:
+    """시작 페이지: 냉장고 하나만. 눌러서 문을 열면 본문으로 넘어간다."""
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        st.markdown("<h1 style='text-align:center;margin-bottom:0'>recipang</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center;color:#5B6770;margin-top:4px'>냉장고에 있는 걸로, 오늘 뭐 해 먹지</p>",
+                    unsafe_allow_html=True)
+        n = len(items[FRIDGE])
+        caption = f"나의 냉장고에 재료 {n}개 · 장바구니 {len(items[CART])}개" if n or items[CART] else "냉장고가 비어 있어요 — 열고 들어가서 장을 봐요"
+        if fridge_view.render(_fridge_by_category(items[FRIDGE]), caption=caption,
+                              key=f"fridge_door_{st.session_state.get('landing_no', 0)}") == "open":
+            st.session_state["entered"] = True
+            st.rerun()
+
+
+@st.dialog("나의 냉장고", width="large")
+def _fridge_dialog(items: dict[str, list[str]]) -> None:
+    """[냉장고 보기] 팔업: 냉장고 모형을 띄우고, 눌러서 열면 담긴 걸 본다. 페이지는 안 바뀜다."""
+    n = len(items[FRIDGE])
+    fridge_view.render(_fridge_by_category(items[FRIDGE]), signal=False, key="fridge_peek",
+                       caption=f"재료 {n}개 · 냉장고를 눌러 열고 닫으세요" if n else "비어 있어요")
 
 
 def main() -> None:
     st.set_page_config(page_title="recipang", layout="wide")
-    st.title("recipang")
 
     try:
         items = _backend().items()  # 한 번 그릴 때 한 번만 조회해 사이드바와 카드 버튼이 같이 쓴다
@@ -456,17 +595,32 @@ def main() -> None:
         st.error(str(e))
         st.stop()
 
+    # 시작 페이지: 냉장고를 열어야 본문이 나온다
+    if not st.session_state.get("entered"):
+        _render_landing(items)
+        return
+
     with st.sidebar:
+        st.markdown("<h2 style='margin:0 0 6px'>recipang</h2>", unsafe_allow_html=True)
+        home_col, peek_col = st.columns(2)
+        if home_col.button("🏠 홈으로", use_container_width=True, help="시작 화면으로"):
+            st.session_state["entered"] = False
+            # 컴포넌트 key 를 바꿔야 직전에 보낸 "open" 값이 남아 바로 다시 들어가버리는 걸 막는다
+            st.session_state["landing_no"] = st.session_state.get("landing_no", 0) + 1
+            st.rerun()
+        if peek_col.button("🧊 냉장고 보기", use_container_width=True, help="담긴 걸 냉장고 모형으로 보기"):
+            _fridge_dialog(items)
+        st.divider()
         _render_place(CART, items[CART])
         st.divider()
         _render_place(FRIDGE, items[FRIDGE])
 
-    shop_col, chat_col = st.columns(2, gap="large")
+    shop_col, chat_col = st.columns([2, 3], gap="large")
     with shop_col:
-        st.subheader("장보기")
+        st.subheader("🛒 장보기")
         _render_shop()
     with chat_col:
-        st.subheader("레시피 추천")
+        st.subheader("🍳 레시피 추천")
         _render_chat(items)
 
 

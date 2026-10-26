@@ -1,0 +1,12 @@
+[theme]
+# recipang — 부엌 느낌의 따뜻한 팔레트
+base = "light"
+primaryColor = "#E8552B"            # 토마토 오렌지: 주 버튼, 선택된 알약, 탭 밑줄
+backgroundColor = "#FFFDF9"         # 본문: 아주 옅은 크림
+secondaryBackgroundColor = "#FFF3E8" # 사이드바·대화 박스·카드: 살구빛
+textColor = "#2B2118"
+font = "sans serif"
+baseRadius = "12px"                 # 둥근 모서리 (알약·버튼·카드)
+
+[server]
+headless = true
