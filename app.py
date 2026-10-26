@@ -71,6 +71,12 @@ SEASONING_CATEGORY = "양념·오일"  # 나의 냉장고에서 '양념'으로 �
 CART, FRIDGE = "cart", "fridge"
 PLACE_NAMES = {CART: "장바구니", FRIDGE: "나의 냉장고"}
 
+# 로고 파일 (assets/)
+_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+LOGO_FRIDGE = os.path.join(_ASSETS, "recipang_logo_fridge.svg")   # 냉장고 캐릭터만 (아이콘용)
+LOGO_WORD = os.path.join(_ASSETS, "recipang_word.svg")           # 워드마크만 (사이드바용)
+LOGO_LOCKUP = os.path.join(_ASSETS, "recipang_logo_word.svg")    # 캐릭터 + 워드마크 + 태그라인 (시작 페이지용)
+
 # 대분류 탭 이모지 (catalog.py 의 이름 기준). 없으면 이모지 없이 이름만.
 CATEGORY_EMOJI = {
     "채소": "🥬", "과일·견과·쌀": "🍎", "수산·해산·건어물": "🐟", "정육·가공육·달걀": "🥩",
@@ -510,14 +516,14 @@ def _render_chat(items: dict[str, list[str]]) -> None:
 
     with st.container(height=CHAT_HEIGHT):
         if not chat:
-            # 빈 상태: 글 대신 그림 한 장
+            # 빈 상태: 마스코트 + 카피 한 줄 (세로 가운데 쯤에 오도록 위에 여백)
+            st.markdown("<div style='height:56px'></div>", unsafe_allow_html=True)
+            _, mid, _ = st.columns([2.6, 1, 2.6])
+            mid.image(LOGO_FRIDGE, use_container_width=True)
             st.markdown(
                 """
-                <div style="text-align:center;padding:48px 12px 24px">
-                  <div style="font-size:56px;letter-spacing:6px;line-height:1">🥔🥩🧀</div>
-                  <div style="font-size:44px;line-height:1.2;margin:4px 0 10px">⬇️</div>
-                  <div style="font-size:56px;letter-spacing:6px;line-height:1">🍲</div>
-                  <p style="margin:18px 0 4px;font-size:18px;font-weight:600">냉장고에 있는 걸로, 오늘 뭐 해 먹지</p>
+                <div style="text-align:center;padding:4px 12px 20px">
+                  <p style="margin:10px 0 4px;font-size:18px;font-weight:600">냉장고에 있는 걸로, 오늘 뭐 해 먹지</p>
                   <p style="margin:0;color:#8A7A6E;font-size:14px">아래 예시를 누르거나 직접 적어 주세요.<br>장바구니·냉장고 정리도 말로 됩니다.</p>
                 </div>
                 """,
@@ -567,9 +573,9 @@ def _render_landing(items: dict[str, list[str]]) -> None:
     """시작 페이지: 냉장고 하나만. 눌러서 문을 열면 본문으로 넘어간다."""
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
-        st.markdown("<h1 style='text-align:center;margin-bottom:0'>recipang</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center;color:#5B6770;margin-top:4px'>냉장고에 있는 걸로, 오늘 뭐 해 먹지</p>",
-                    unsafe_allow_html=True)
+        # 로고 록업(캐릭터 + 워드마크 + 태그라인)을 가운데에, 그 아래 열 수 있는 냉장고
+        _, logo_col, _ = st.columns([1.6, 2, 1.6])
+        logo_col.image(LOGO_LOCKUP, use_container_width=True)
         n = len(items[FRIDGE])
         caption = f"나의 냉장고에 재료 {n}개 · 장바구니 {len(items[CART])}개" if n or items[CART] else "냉장고가 비어 있어요 — 열고 들어가서 장을 봐요"
         if fridge_view.render(_fridge_by_category(items[FRIDGE]), caption=caption,
@@ -587,7 +593,9 @@ def _fridge_dialog(items: dict[str, list[str]]) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="recipang", layout="wide")
+    st.set_page_config(page_title="recipang", page_icon=LOGO_FRIDGE, layout="wide")
+    # 사이드바 맨 위와 상단 바의 로고. 사이드바를 접으면 냉장고 캐릭터만 남는다.
+    st.logo(LOGO_WORD, icon_image=LOGO_FRIDGE, size="large")
 
     try:
         items = _backend().items()  # 한 번 그릴 때 한 번만 조회해 사이드바와 카드 버튼이 같이 쓴다
@@ -601,7 +609,6 @@ def main() -> None:
         return
 
     with st.sidebar:
-        st.markdown("<h2 style='margin:0 0 6px'>recipang</h2>", unsafe_allow_html=True)
         home_col, peek_col = st.columns(2)
         if home_col.button("🏠 홈으로", use_container_width=True, help="시작 화면으로"):
             st.session_state["entered"] = False
