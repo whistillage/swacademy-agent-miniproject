@@ -13,3 +13,6 @@ recipes.db
 recipes.db.tmp
 local_qdrant/
 .langgraph_api/
+
+# macOS 폴더 메타데이터
+**/.DS_Store

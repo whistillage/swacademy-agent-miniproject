@@ -17,3 +17,6 @@ local_qdrant/
 
 # langgraph dev (Studio) 실행 데이터
 .langgraph_api/
+
+# macOS 폴더 메타데이터
+.DS_Store

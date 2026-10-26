@@ -1,7 +1,7 @@
 # ============================================================================
 # frontend 이미지: Streamlit 화면 (app.py)
 # ----------------------------------------------------------------------------
-# 빌드 컨텍스트는 저장소 루트. 화면에 필요한 파일 3개만 복사한다 — 백엔드 코드(그래프·검색·DB)는 넣지 않는다.
+# 빌드 컨텍스트는 저장소 루트. 화면에 필요한 파일만 복사한다 — 백엔드 코드(그래프·검색·DB)는 넣지 않는다.
 # app.py 는 AGENT_API_URL 이 있으면 api_client.ApiBackend 로 agent-app API 만 부른다.
 # ============================================================================
 
@@ -14,7 +14,11 @@ WORKDIR /app
 COPY docker/requirements-frontend.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py api_client.py errors.py ./
+# 화면 코드 + 냉장고 문 컴포넌트(fridge_view.py → fridge_component/) + 로고(assets/) + 테마(.streamlit/config.toml)
+COPY app.py api_client.py errors.py fridge_view.py ./
+COPY fridge_component/ fridge_component/
+COPY assets/ assets/
+COPY .streamlit/ .streamlit/
 
 EXPOSE 8501
 
